@@ -1,147 +1,107 @@
-<!-- 在原HTML文件顶部插入以下代码（放在<head>标签起始位置后） -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
 <script>
-// 认证配置（请替换为您的凭证）
+// 认证配置（通过CF环境变量注入）
 const AUTH_CONFIG = {
-  USERNAME: 'admin',    // 在此设置用户名
-  PASSWORD: 'secure123',// 在此设置密码
-  COOKIE_NAME: 'libretv_auth',
-  COOKIE_TTL: 21600,    // 6小时有效期(秒)
-  RETRY_LIMIT: 3        // 最大尝试次数
+  COOKIE_NAME: '__Host-libretv_auth', 
+  COOKIE_TTL: 21600,
+  RETRY_LIMIT: 3,
+  USERNAME: atob('%%USERNAME_B64%%'),  // CF注入Base64用户名
+  PASSWORD: atob('%%PASSWORD_B64%%')   // CF注入Base64密码
 };
 
 (function() {
-  // 初始化尝试计数器
-  let attemptCount = 0;
-  
-  // 隐藏页面内容
+  let attempts = 0;
   const style = document.createElement('style');
   style.textContent = 'body { visibility: hidden !important; }';
   document.head.appendChild(style);
 
-  // Cookie操作函数
+  // 安全Cookie操作
   const getCookie = name => {
-    const match = document.cookie.match(new RegExp(`${name}=([^;]+)`));
-    return match ? match[1] : null;
+    return document.cookie
+      .split('; ')
+      .find(row => row.startsWith(name+'='))
+      ?.split('=')[1];
   };
 
   const setCookie = () => {
-    document.cookie = `${AUTH_CONFIG.COOKIE_NAME}=valid; `
+    document.cookie = `${AUTH_CONFIG.COOKIE_NAME}=1; `
       + `max-age=${AUTH_CONFIG.COOKIE_TTL}; `
       + 'path=/; secure; samesite=strict';
   };
 
-  // 认证验证函数
-  const validateCredentials = (user, pass) => {
-    // 简单时间差混淆验证
-    const validUser = btoa(AUTH_CONFIG.USERNAME) === 'YWRtaW4='; // admin的base64
-    const validPass = btoa(AUTH_CONFIG.PASSWORD) === 'c2VjdXJlMTIz'; // secure123的base64
-    return validUser && validPass && user === AUTH_CONFIG.USERNAME && pass === AUTH_CONFIG.PASSWORD;
-  };
-
-  // 执行认证检查
-  const authCheck = () => {
-    if (getCookie(AUTH_CONFIG.COOKIE_NAME) === 'valid') {
-      document.head.removeChild(style);
-      return true;
+  // 防时序攻击比较
+  const secureCompare = (a, b) => {
+    const aBuf = new TextEncoder().encode(a);
+    const bBuf = new TextEncoder().encode(b);
+    if (aBuf.length !== bBuf.length) return false;
+    
+    let result = 0;
+    for (let i = 0; i < aBuf.length; i++) {
+      result |= aBuf[i] ^ bBuf[i];
     }
-
-    // 创建认证弹窗
-    const authHTML = `
-      <div id="authOverlay" style="
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0,0,0,0.9);
-        z-index: 9999;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      ">
-        <div style="
-          background: #111;
-          padding: 2rem;
-          border-radius: 8px;
-          text-align: center;
-          border: 1px solid #333;
-        ">
-          <h2 style="color: #fff; margin-bottom: 1.5rem;">访问授权</h2>
-          <input type="text" id="authUser" placeholder="用户名" style="
-            display: block;
-            margin: 0.5rem auto;
-            padding: 0.8rem;
-            width: 200px;
-            background: #222;
-            border: 1px solid #333;
-            color: #fff;
-            border-radius: 4px;
-          ">
-          <input type="password" id="authPass" placeholder="密码" style="
-            display: block;
-            margin: 0.5rem auto;
-            padding: 0.8rem;
-            width: 200px;
-            background: #222;
-            border: 1px solid #333;
-            color: #fff;
-            border-radius: 4px;
-          ">
-          <button onclick="handleAuth()" style="
-            margin-top: 1rem;
-            padding: 0.6rem 1.5rem;
-            background: #444;
-            color: #fff;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-          ">验证</button>
-          <p id="errorMsg" style="color: #ff4444; margin-top: 1rem; height: 1.2rem;"></p>
-        </div>
-      </div>
-    `;
-
-    document.body.insertAdjacentHTML('afterbegin', authHTML);
-    return false;
+    return result === 0;
   };
 
-  // 处理认证提交
+  // 认证弹窗
+  const authHTML = `
+  <div id="authOverlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:9999;display:flex;justify-content:center;align-items:center;">
+    <div style="background:#111;padding:2rem;border-radius:8px;text-align:center;border:1px solid #333;">
+      <h2 style="color:#fff;margin-bottom:1.5rem;">访问授权</h2>
+      <input type="text" id="authUser" placeholder="用户名" style="display:block;margin:0.5rem auto;padding:0.8rem;width:200px;background:#222;border:1px solid #333;color:#fff;border-radius:4px;">
+      <input type="password" id="authPass" placeholder="密码" style="display:block;margin:0.5rem auto;padding:0.8rem;width:200px;background:#222;border:1px solid #333;color:#fff;border-radius:4px;">
+      <button onclick="handleAuth()" style="margin-top:1rem;padding:0.6rem 1.5rem;background:#444;color:#fff;border:none;border-radius:4px;cursor:pointer;">验证</button>
+      <p id="errorMsg" style="color:#ff4444;margin-top:1rem;height:1.2rem;"></p>
+    </div>
+  </div>`;
+
+  // 认证处理
   window.handleAuth = () => {
     const user = document.getElementById('authUser').value;
     const pass = document.getElementById('authPass').value;
     const errorMsg = document.getElementById('errorMsg');
 
-    if (++attemptCount > AUTH_CONFIG.RETRY_LIMIT) {
+    if (++attempts > AUTH_CONFIG.RETRY_LIMIT) {
       errorMsg.textContent = '超过最大尝试次数';
       document.getElementById('authOverlay').remove();
       document.body.innerHTML = '<h1 style="text-align:center;color:#fff;margin-top:50px">访问被拒绝</h1>';
       return;
     }
 
-    if (validateCredentials(user, pass)) {
+    if (secureCompare(user, AUTH_CONFIG.USERNAME) && secureCompare(pass, AUTH_CONFIG.PASSWORD)) {
       setCookie();
       window.location.reload();
     } else {
-      errorMsg.textContent = `认证失败 (剩余尝试次数: ${AUTH_CONFIG.RETRY_LIMIT - attemptCount + 1})`;
+      errorMsg.textContent = `认证失败 (剩余尝试次数: ${AUTH_CONFIG.RETRY_LIMIT - attempts + 1})`;
+      document.getElementById('authPass').value = '';
     }
   };
 
-  // 执行初始检查
-  if (!authCheck()) {
-    // 屏蔽右键和F12
+  // 初始化检查
+  if (getCookie(AUTH_CONFIG.COOKIE_NAME)) {
+    document.head.removeChild(style);
+  } else {
+    document.body.insertAdjacentHTML('afterbegin', authHTML);
+    
+    // 防调试保护
+    const devtoolsCheck = () => {
+      if (window.outerWidth - window.innerWidth > 160 || 
+          window.outerHeight - window.innerHeight > 160) {
+        document.body.innerHTML = '<h1 style="text-align:center;color:#fff;margin-top:50px">安全异常</h1>';
+        window.stop();
+      }
+    };
+    setInterval(devtoolsCheck, 500);
+    
     document.addEventListener('contextmenu', e => e.preventDefault());
     document.addEventListener('keydown', e => {
-      if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
-        e.preventDefault();
-      }
+      if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) e.preventDefault();
     });
   }
 })();
 </script>
-
-<!DOCTYPE html>
-<html lang="zh">
-<head>
+  
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TV-Play - 免费在线视频搜索与观看平台</title>
